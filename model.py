@@ -1,15 +1,23 @@
+import smbus
 import time
 import numpy as np
 from scipy import fftpack
 from joblib import load
-from mpu6050 import mpu6050  # Assuming using mpu6050 accelerometer
 
 # Define the window size and overlap for real-time prediction
 window_size = 8  # Must match the window size used during training
 overlap = 4      # Must match the overlap used during training
 
-# Initialize the accelerometer
-sensor = mpu6050(0x68)
+# Initialize I2C bus
+bus = smbus.SMBus(1)  # Use the appropriate bus number (usually 1 on newer Raspberry Pi models)
+
+# MPU6050 addresses and registers
+DEVICE_ADDRESS = 0x68  # MPU6050 device address
+PWR_MGMT_1 = 0x6B
+ACCEL_XOUT_H = 0x3B
+
+# Configure MPU6050
+bus.write_byte_data(DEVICE_ADDRESS, PWR_MGMT_1, 0)
 
 # Load the trained model
 model = load('gesture_recognition_model.joblib')
@@ -36,9 +44,18 @@ def predict_gesture(features):
 window_data = []
 
 while True:
-    # Read accelerometer data
-    accel_data = sensor.get_accel_data()
-    window_data.append(accel_data)
+    # Read acceleration data
+    accel_data = []
+    for i in range(3):  # Read X, Y, Z axes
+        high = bus.read_byte_data(DEVICE_ADDRESS, ACCEL_XOUT_H + i * 2)
+        low = bus.read_byte_data(DEVICE_ADDRESS, ACCEL_XOUT_H + i * 2 + 1)
+        value = (high << 8) | low
+        if value > 32768:
+            value -= 65536  # Correct signed value
+        accel_data.append(value)
+
+    # Append to window data
+    window_data.append({'x': accel_data[0], 'y': accel_data[1], 'z': accel_data[2]})
 
     # Once we have enough data for one window, predict the gesture
     if len(window_data) == window_size:
