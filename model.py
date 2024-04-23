@@ -1,69 +1,70 @@
-import smbus
+import smbus2 as smbus
 import time
 import numpy as np
 from scipy import fftpack
 from joblib import load
+import pandas as pd
 
-# Define the window size and overlap for real-time prediction
-window_size = 8  # Must match the window size used during training
-overlap = 4      # Must match the overlap used during training
+# Constants
+window_size = 8  # Matches the window size used during training
+overlap = 4      # Matches the overlap used during training
 
 # Initialize I2C bus
-bus = smbus.SMBus(1)  # Use the appropriate bus number (usually 1 on newer Raspberry Pi models)
+bus = smbus.SMBus(1)  # Usually bus 1 on newer Raspberry Pi models
 
 # MPU6050 addresses and registers
 DEVICE_ADDRESS = 0x68  # MPU6050 device address
 PWR_MGMT_1 = 0x6B
 ACCEL_XOUT_H = 0x3B
 
-# Configure MPU6050
-bus.write_byte_data(DEVICE_ADDRESS, PWR_MGMT_1, 0)
+# MPU6050 configuration for reading
+bus.write_byte_data(DEVICE_ADDRESS, PWR_MGMT_1, 0)  # Wake the sensor up
 
 # Load the trained model
 model = load('gesture_recognition_model.joblib')
 
-# Function to preprocess data and extract features
+# Function to extract features from data
 def extract_features(data):
-    features = {}
+    features = []
     for axis in ['x', 'y', 'z']:
         axis_data = np.array([d[axis] for d in data])
-        features[f'{axis}_mean'] = np.mean(axis_data)
-        features[f'{axis}_std'] = np.std(axis_data)
-        features[f'{axis}_max'] = np.max(axis_data)
-        features[f'{axis}_min'] = np.min(axis_data)
-        features[f'{axis}_fft_peak'] = np.max(np.abs(fftpack.fft(axis_data)))
-    return np.array([features[key] for key in sorted(features.keys())])
+        features.append(np.mean(axis_data))
+        features.append(np.std(axis_data))
+    return features[:5]  # Adjust this line to only include the necessary features
+
 
 # Function to predict gesture from features
 def predict_gesture(features):
-    # Reshape into the format expected by the model (1, num_features)
-    prediction = model.predict([features])
+    # Ensure these names match exactly those used during model training
+    feature_names = ['mean_x', 'std_x', 'max_x', 'min_x', 'fft_peak_x']
+    features_df = pd.DataFrame([features], columns=feature_names)
+    prediction = model.predict(features_df)
     return prediction[0]
 
-# Real-time prediction loop
+# Real-time data acquisition and prediction loop
 window_data = []
 
 while True:
-    # Read acceleration data
+    # Read acceleration data from MPU6050
     accel_data = []
-    for i in range(3):  # Read X, Y, Z axes
+    for i in range(3):  # Reading X, Y, Z axes
         high = bus.read_byte_data(DEVICE_ADDRESS, ACCEL_XOUT_H + i * 2)
         low = bus.read_byte_data(DEVICE_ADDRESS, ACCEL_XOUT_H + i * 2 + 1)
         value = (high << 8) | low
         if value > 32768:
-            value -= 65536  # Correct signed value
+            value -= 65536  # Convert to signed value if necessary
         accel_data.append(value)
 
-    # Append to window data
+    # Append new data to the sliding window
     window_data.append({'x': accel_data[0], 'y': accel_data[1], 'z': accel_data[2]})
 
-    # Once we have enough data for one window, predict the gesture
-    if len(window_data) == window_size:
+    # Predict gesture when enough data is collected
+    if len(window_data) >= window_size:
         features = extract_features(window_data)
         gesture = predict_gesture(features)
         print(f"Predicted gesture: {gesture}")
 
         # Move the window with overlap
-        window_data = window_data[window_size - overlap:]
+        window_data = window_data[overlap:]
 
-    time.sleep(0.01)  # Adjust the sleep time as needed
+    time.sleep(0.01)  # Small delay to prevent excessive CPU usage
